@@ -14,16 +14,42 @@ import "strconv"
 // and reply for an RPC.
 //
 
-type ExampleArgs struct {
-	X int
+type MRArgs struct {
+	// true if it's first time call cn
+	FirstTime bool
+
+	// true if this is a map task's arguments for last call's reply
+	IsMapTask bool
+
+	// used for map task
+	MapIndex           int
+	IntermediateResult map[int]string
+
+	// used for reduce task
+	ReduceIndex int
+	FinalResult string
 }
 
-type ExampleReply struct {
-	Y int
+type MRReply struct {
+	// true if all tasks has finished, and the worker would exit
+	Done bool
+
+	HasTask bool
+
+	// true if this is a map task's reply from cn
+	IsMapTask bool
+
+	// used for map task
+	MapIndex    int
+	Filename    string
+	ReduceCount int
+
+	// used for reduce task
+	ReduceIndex      int
+	ReduceMergeFiles []string
 }
 
 // Add your RPC definitions here.
-
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
