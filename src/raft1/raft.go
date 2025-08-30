@@ -414,7 +414,7 @@ func (rf *Raft) heartbeat() {
 						}
 					}
 					// sleep random time to deliver next heartbeat
-					ms := 50 + (rand.Int63() % 100)
+					ms := 10 + (rand.Int63() % 40)
 					time.Sleep(time.Duration(ms) * time.Millisecond)
 				}
 			}
