@@ -478,11 +478,12 @@ func (rf *Raft) heartbeat() {
 				case <-stopHeartbeat:
 					return
 				default:
+					nextIndex := rf.nextIndex[server]
 					args := &AppendEntriesArgs{Term: rf.currentTerm.Load(),
 						LeaderId:     rf.me,
 						LeaderCommit: rf.commitIndex.Load(),
-						PrevLogTerm:  rf.log[rf.nextIndex[server]-1].Term,
-						PrevLogIndex: rf.nextIndex[server] - 1}
+						PrevLogTerm:  rf.log[nextIndex-1].Term,
+						PrevLogIndex: nextIndex - 1}
 					reply := &AppendEntriesReply{}
 					ok := rf.sendAppendEntries(server, args, reply)
 					if ok {
