@@ -29,6 +29,7 @@ const (
 
 // A Go object to store log entry information
 type Log struct {
+	Index   int
 	Term    int64
 	Command interface{}
 }
@@ -164,7 +165,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// if votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
 	logLength := len(rf.log)
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) &&
-		(rf.log[logLength-1].Term < args.LastLogTerm || (rf.log[logLength-1].Term == args.LastLogTerm && logLength-1 <= args.LastLogIndex)) {
+		(rf.log[logLength-1].Term < args.LastLogTerm || (rf.log[logLength-1].Term == args.LastLogTerm && rf.log[logLength-1].Index <= args.LastLogIndex)) {
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
 		reply.Voter = rf.me
@@ -204,14 +205,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// periodic heartbeats
 	rf.receiveHeartBeat = true
 	// check log matches or not
-	if len(rf.log)-1 < args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	lastLogIndex := rf.log[len(rf.log)-1].Index
+	relativeIndex := rf.relativeIndex(args.PrevLogIndex)
+	if lastLogIndex < args.PrevLogIndex || rf.log[relativeIndex].Term != args.PrevLogTerm {
 		reply.Success = false
 		reply.Term = currentTerm
 		return
 	}
 	reply.Success = true
 	if len(args.Entries) != 0 {
-		rf.log = rf.log[:args.PrevLogIndex+1]
+		rf.log = rf.log[:relativeIndex+1]
 		rf.log = append(rf.log, args.Entries...)
 	}
 	if args.LeaderCommit > rf.commitIndex.Load() {
@@ -276,8 +279,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	currentTerm := rf.currentTerm.Load()
-	rf.log = append(rf.log, Log{currentTerm, command})
-	return len(rf.log) - 1, int(currentTerm), true
+	logIndex := rf.log[len(rf.log)-1].Index + 1
+	rf.log = append(rf.log, Log{logIndex, currentTerm, command})
+	return logIndex, int(currentTerm), true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -331,7 +335,7 @@ func (rf *Raft) election(stop <-chan struct{}) {
 	replyChannel := make(chan RequestVoteReply, len(rf.peers))
 	rf.mu.Lock()
 	args := &RequestVoteArgs{rf.currentTerm.Load(),
-		rf.me, len(rf.log) - 1, rf.log[len(rf.log)-1].Term}
+		rf.me, rf.log[len(rf.log)-1].Index, rf.log[len(rf.log)-1].Term}
 	rf.mu.Unlock()
 	// go send RequestVote RPC to all other servers
 	for server := range rf.peers {
@@ -400,10 +404,10 @@ func (rf *Raft) election(stop <-chan struct{}) {
 
 func (rf *Raft) checkNewAgreement() {
 	for rf.killed() == false && rf.state.Load() == LEADER {
-		for i := len(rf.log) - 1; i > int(rf.commitIndex.Load()) && rf.log[i].Term == rf.currentTerm.Load(); i-- {
+		for i := len(rf.log) - 1; rf.log[i].Index > int(rf.commitIndex.Load()) && rf.log[i].Term == rf.currentTerm.Load(); i-- {
 			agreeCount := 0
 			for _, matched := range rf.matchIndex {
-				if matched >= i {
+				if matched >= rf.log[i].Index {
 					agreeCount++
 				}
 			}
@@ -424,17 +428,18 @@ func (rf *Raft) replicateLog() {
 		}
 		go func() {
 			for rf.killed() == false && rf.state.Load() == LEADER {
-				// TODO use an atomic value to store lastLogIndex to avoid data race
-				lastLogIndex := len(rf.log) - 1
+				// TODO use an atomic value to store lastLogIndex to avoid data race and remember to store its correct value after read from persistent
+				lastLogIndex := rf.log[len(rf.log)-1].Index
 				nextIndex := rf.nextIndex[server]
+				relativeIndex := rf.relativeIndex(nextIndex)
 				if nextIndex <= lastLogIndex {
 					// send append entries rpc
 					args := &AppendEntriesArgs{
 						rf.currentTerm.Load(),
 						rf.me,
 						nextIndex - 1,
-						rf.log[nextIndex-1].Term,
-						rf.log[nextIndex:],
+						rf.log[relativeIndex-1].Term,
+						rf.log[relativeIndex:],
 						rf.commitIndex.Load()}
 					reply := &AppendEntriesReply{}
 					if ok := rf.sendAppendEntries(server, args, reply); !ok {
@@ -442,8 +447,8 @@ func (rf *Raft) replicateLog() {
 					}
 					if reply.Success {
 						// update nextIndex and matchIndex
-						rf.nextIndex[server] = len(rf.log)
-						rf.matchIndex[server] = len(rf.log) - 1
+						rf.nextIndex[server] = lastLogIndex + 1
+						rf.matchIndex[server] = lastLogIndex
 					} else if reply.Term > rf.currentTerm.Load() {
 						rf.mu.Lock()
 						if reply.Term > rf.currentTerm.Load() {
@@ -452,11 +457,7 @@ func (rf *Raft) replicateLog() {
 						rf.mu.Unlock()
 						return
 					} else {
-						// when prevLogIndex not match, then can pass all the log with Term=prevLogTerm
-						var index = nextIndex - 1
-						for ; index >= 0 && args.PrevLogTerm == rf.log[index].Term; index-- {
-						}
-						rf.nextIndex[server] = index + 1
+						rf.nextIndex[server]--
 					}
 				}
 				time.Sleep(10 * time.Millisecond)
@@ -479,10 +480,11 @@ func (rf *Raft) heartbeat() {
 					return
 				default:
 					nextIndex := rf.nextIndex[server]
+					relativeIndex := rf.relativeIndex(nextIndex)
 					args := &AppendEntriesArgs{Term: rf.currentTerm.Load(),
 						LeaderId:     rf.me,
 						LeaderCommit: rf.commitIndex.Load(),
-						PrevLogTerm:  rf.log[nextIndex-1].Term,
+						PrevLogTerm:  rf.log[relativeIndex-1].Term,
 						PrevLogIndex: nextIndex - 1}
 					reply := &AppendEntriesReply{}
 					ok := rf.sendAppendEntries(server, args, reply)
@@ -523,7 +525,9 @@ func (rf *Raft) applyLog(applyCh chan raftapi.ApplyMsg) {
 		if rf.commitIndex.Load() > rf.lastApplied.Load() {
 			rf.mu.Lock()
 			appliedIndex := rf.lastApplied.Add(1)
-			applyMsg := raftapi.ApplyMsg{CommandValid: true, Command: rf.log[appliedIndex].Command, CommandIndex: int(appliedIndex)}
+			applyMsg := raftapi.ApplyMsg{CommandValid: true,
+				Command:      rf.log[rf.relativeIndex(int(appliedIndex))].Command,
+				CommandIndex: int(appliedIndex)}
 			rf.mu.Unlock()
 			applyCh <- applyMsg
 		}
@@ -535,6 +539,11 @@ func (rf *Raft) discoverNewTerm(newTerm int64) {
 	rf.state.Store(FOLLOWER)
 	rf.currentTerm.Store(newTerm)
 	rf.votedFor = -1
+}
+
+func (rf *Raft) relativeIndex(logIndex int) int {
+	logLength := len(rf.log)
+	return logLength - 1 - (rf.log[logLength-1].Index - logIndex)
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -568,7 +577,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 	rf.matchIndex = make([]int, len(peers))
 	rf.log = make([]Log, 0)
-	rf.log = append(rf.log, Log{0, 0})
+	rf.log = append(rf.log, Log{0, 0, 0})
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
