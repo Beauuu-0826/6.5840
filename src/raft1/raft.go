@@ -400,6 +400,7 @@ func (rf *Raft) election(stop <-chan struct{}) {
 
 func (rf *Raft) checkNewAgreement() {
 	for rf.killed() == false && rf.state.Load() == LEADER {
+		rf.mu.Lock()
 		for i := len(rf.log) - 1; i > int(rf.commitIndex.Load()) && rf.log[i].Term == rf.currentTerm.Load(); i-- {
 			agreeCount := 0
 			for _, matched := range rf.matchIndex {
@@ -413,6 +414,7 @@ func (rf *Raft) checkNewAgreement() {
 				break
 			}
 		}
+		rf.mu.Unlock()
 		time.Sleep(10 * time.Millisecond)
 	}
 }
@@ -424,6 +426,7 @@ func (rf *Raft) replicateLog() {
 		}
 		go func() {
 			for rf.killed() == false && rf.state.Load() == LEADER {
+				rf.mu.Lock()
 				// TODO use an atomic value to store lastLogIndex to avoid data race
 				lastLogIndex := len(rf.log) - 1
 				nextIndex := rf.nextIndex[server]
@@ -436,14 +439,17 @@ func (rf *Raft) replicateLog() {
 						rf.log[nextIndex-1].Term,
 						rf.log[nextIndex:],
 						rf.commitIndex.Load()}
+					rf.mu.Unlock()
 					reply := &AppendEntriesReply{}
 					if ok := rf.sendAppendEntries(server, args, reply); !ok {
 						continue
 					}
 					if reply.Success {
+						rf.mu.Lock()
 						// update nextIndex and matchIndex
 						rf.nextIndex[server] = len(rf.log)
 						rf.matchIndex[server] = len(rf.log) - 1
+						rf.mu.Unlock()
 					} else if reply.Term > rf.currentTerm.Load() {
 						rf.mu.Lock()
 						if reply.Term > rf.currentTerm.Load() {
@@ -452,12 +458,16 @@ func (rf *Raft) replicateLog() {
 						rf.mu.Unlock()
 						return
 					} else {
+						rf.mu.Lock()
 						// when prevLogIndex not match, then can pass all the log with Term=prevLogTerm
 						var index = nextIndex - 1
 						for ; index >= 0 && args.PrevLogTerm == rf.log[index].Term; index-- {
 						}
 						rf.nextIndex[server] = index + 1
+						rf.mu.Unlock()
 					}
+				} else {
+					rf.mu.Unlock()
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
@@ -478,11 +488,13 @@ func (rf *Raft) heartbeat() {
 				case <-stopHeartbeat:
 					return
 				default:
+					rf.mu.Lock()
 					args := &AppendEntriesArgs{Term: rf.currentTerm.Load(),
 						LeaderId:     rf.me,
 						LeaderCommit: rf.commitIndex.Load(),
 						PrevLogTerm:  rf.log[rf.nextIndex[server]-1].Term,
 						PrevLogIndex: rf.nextIndex[server] - 1}
+					rf.mu.Unlock()
 					reply := &AppendEntriesReply{}
 					ok := rf.sendAppendEntries(server, args, reply)
 					if ok {
