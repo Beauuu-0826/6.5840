@@ -207,12 +207,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Peer = rf.me
 		return
 	}
+	// periodic heartbeats
+	rf.receiveHeartBeat = true
 	rf.leaderId = args.LeaderId
 	if currentTerm < args.Term || rf.state.Load() == CANDIDATE {
 		rf.discoverNewTerm(args.Term)
 	}
-	// periodic heartbeats
-	rf.receiveHeartBeat = true
 	// check log matches or not
 	lastLogIndex := rf.log[len(rf.log)-1].Index
 	relativeIndex := rf.relativeIndex(args.PrevLogIndex)
@@ -236,20 +236,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	reply.Success = true
-	if len(args.Entries) != 0 {
-		rf.log = rf.log[:relativeIndex+1]
-		rf.log = append(rf.log, args.Entries...)
-		DPrintf("[Peer %v, Term %v] Append log entries %v", rf.me, rf.currentTerm.Load(), args.Entries)
+	if len(args.Entries) != 0 && lastLogIndex < args.Entries[len(args.Entries)-1].Index {
+		rf.log = append(rf.log[:relativeIndex+1], args.Entries...)
 		rf.persist()
+	} else {
+		for i := 0; i < len(args.Entries); i++ {
+			logIndex := relativeIndex + 1 + i
+			if rf.log[logIndex].Term != args.Entries[i].Term || rf.log[logIndex].Index != args.Entries[i].Index {
+				// conflict at logIndex
+				rf.log = append(rf.log[:logIndex], args.Entries[i:]...)
+				rf.persist()
+				break
+			}
+		}
 	}
 	newCommitIndex := min(args.LeaderCommit, int64(args.PrevLogIndex+len(args.Entries)))
-	if rf.commitIndex.Load() < newCommitIndex {
+	if newCommitIndex > rf.commitIndex.Load() {
 		rf.commitIndex.Store(newCommitIndex)
 	}
 }
 
 // example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
+// server is the index of the target server in  rf.peers[].
 // expects RPC arguments in args.
 // fills in *reply with RPC reply, so caller should
 // pass &reply.
@@ -329,6 +337,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+// TODO leverage channel to close the go routine and restart when receive heartbeat or candidate req or candidate start election. And maybe when candidate learns that its log is not updated, it can prolong the election timeout
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		// Your code here (3A)
@@ -456,7 +465,6 @@ func (rf *Raft) replicateLog() {
 		}
 		go func() {
 			for rf.killed() == false && rf.state.Load() == LEADER {
-				// TODO use an atomic value to store lastLogIndex to avoid data race and remember to store its correct value after read from persistent
 				lastLogIndex := rf.log[len(rf.log)-1].Index
 				nextIndex := rf.nextIndex[server]
 				relativeIndex := rf.relativeIndex(nextIndex)
@@ -534,8 +542,10 @@ func (rf *Raft) heartbeat() {
 						rf.backup(reply)
 						rf.mu.Unlock()
 					}
+					time.Sleep(80 * time.Millisecond)
+					continue
 				}
-				time.Sleep(80 * time.Millisecond)
+				time.Sleep(10 * time.Millisecond)
 			}
 		}()
 	}
