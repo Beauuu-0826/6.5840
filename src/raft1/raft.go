@@ -157,7 +157,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		return
 	}
-	rf.receiveCandidateReq = true
 	if args.Term > currentTerm {
 		rf.discoverNewTerm(args.Term)
 	}
@@ -170,6 +169,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.votedFor = args.CandidateId
 			rf.persist()
 		}
+		rf.receiveCandidateReq = true
 		reply.VoteGranted = true
 		reply.Voter = rf.me
 	} else {
