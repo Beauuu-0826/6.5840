@@ -536,7 +536,7 @@ func (rf *Raft) replicateLog() {
 				rf.mu.Lock()
 				lastLogIndex := rf.log[len(rf.log)-1].Index
 				nextIndex := rf.nextIndex[server]
-				if nextIndex <= lastLogIndex && !rf.existsLog(nextIndex-1) {
+				if nextIndex <= lastLogIndex && (!rf.existsLog(nextIndex-1) || !rf.existsLog(nextIndex)) {
 					args := &InstallSnapshotArgs{
 						rf.currentTerm.Load(),
 						rf.me,
