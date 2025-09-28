@@ -499,6 +499,7 @@ func (rf *Raft) election(stop <-chan struct{}) {
 				rf.mu.Lock()
 				DPrintf("[Peer %v, Term %v] Receive marjority votes from %v, transform state into LEADER, start its term", rf.me, rf.currentTerm.Load(), receiveVotes)
 				rf.state.Store(LEADER)
+				rf.noop()
 				for i := 0; i < len(rf.peers); i++ {
 					rf.nextIndex[i] = rf.log[len(rf.log)-1].Index + 1
 					rf.matchIndex[i] = 0
@@ -513,6 +514,21 @@ func (rf *Raft) election(stop <-chan struct{}) {
 		default:
 		}
 	}
+}
+
+// no-op used to process the situation like when leader receive a command and then crashed or be partitioned,
+// the new leader take office. And in the following time, no req arrived.
+// When the old leader recovers, it will become leader in case that it owns the latest log,
+// but due to figure 8's restriction, the system will not apply this last long entry because
+// the entry's term is less than current term. Only if the system receives new req will the
+// log entry be applied
+
+// And no-op can handle this case when a leader take office, it will append a no-op log entry
+// to force commitment of previous logs
+func (rf *Raft) noop() {
+	logIndex := rf.log[len(rf.log)-1].Index + 1
+	rf.log = append(rf.log, Log{logIndex, rf.currentTerm.Load(), nil})
+	rf.persist()
 }
 
 func (rf *Raft) checkNewAgreement() {

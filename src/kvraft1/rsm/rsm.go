@@ -96,11 +96,12 @@ func (rsm *RSM) reader() {
 				return
 			}
 			if applyMsg.CommandValid {
-				op := applyMsg.Command.(Op)
+				op, isOp := applyMsg.Command.(Op)
 				returned := rsm.sm.DoOp(op.Req)
 				rsm.mu.Lock()
-				if pendingOp, ok := rsm.pendingOps[applyMsg.CommandIndex]; ok {
-					if pendingOp.Me != op.Me && pendingOp.Id != op.Id {
+				if pendingOp, exists := rsm.pendingOps[applyMsg.CommandIndex]; exists {
+					// isOp = false means no-op
+					if !isOp || pendingOp.Me != op.Me && pendingOp.Id != op.Id {
 						for _, ch := range rsm.pendingChannels {
 							close(ch)
 						}
