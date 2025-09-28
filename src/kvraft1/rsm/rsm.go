@@ -96,7 +96,7 @@ func (rsm *RSM) reader() {
 				return
 			}
 			if applyMsg.CommandValid {
-				op, _ := applyMsg.Command.(Op)
+				op := applyMsg.Command.(Op)
 				returned := rsm.sm.DoOp(op.Req)
 				rsm.mu.Lock()
 				if pendingOp, ok := rsm.pendingOps[applyMsg.CommandIndex]; ok {
@@ -104,8 +104,8 @@ func (rsm *RSM) reader() {
 						for _, ch := range rsm.pendingChannels {
 							close(ch)
 						}
-						rsm.pendingChannels = make(map[int]chan any, 0)
-						rsm.pendingOps = make(map[int]Op, 0)
+						rsm.pendingChannels = make(map[int]chan any)
+						rsm.pendingOps = make(map[int]Op)
 					} else {
 						rsm.pendingChannels[applyMsg.CommandIndex] <- returned
 						delete(rsm.pendingOps, applyMsg.CommandIndex)

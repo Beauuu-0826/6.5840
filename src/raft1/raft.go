@@ -41,7 +41,11 @@ type Raft struct {
 	persister *tester.Persister   // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
-	applyCh   chan raftapi.ApplyMsg
+
+	// apply channel related
+	applyCh  chan raftapi.ApplyMsg
+	chMu     sync.Mutex
+	chClosed atomic.Bool
 
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
@@ -396,6 +400,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	rf.chMu.Lock()
+	defer rf.chMu.Unlock()
+	rf.chClosed.Store(true)
 	close(rf.applyCh)
 }
 
@@ -724,6 +731,11 @@ func (rf *Raft) backup(reply *AppendEntriesReply) {
 }
 
 func (rf *Raft) applyToStateMachine(applyMsgs ...raftapi.ApplyMsg) {
+	rf.chMu.Lock()
+	defer rf.chMu.Unlock()
+	if rf.chClosed.Load() {
+		return
+	}
 	for _, msg := range applyMsgs {
 		rf.applyCh <- msg
 	}
