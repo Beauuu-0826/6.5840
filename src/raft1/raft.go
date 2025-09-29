@@ -540,16 +540,22 @@ func (rf *Raft) noop() {
 
 func (rf *Raft) checkNewAgreement() {
 	for rf.killed() == false && rf.state.Load() == LEADER {
-		for i := len(rf.log) - 1; rf.log[i].Index > int(rf.commitIndex.Load()) && rf.log[i].Term == rf.currentTerm.Load(); i-- {
+		rf.mu.Lock()
+		tmpLog := make([]Log, len(rf.log))
+		tmpMatchIndex := make([]int, len(rf.matchIndex))
+		copy(tmpLog, rf.log)
+		copy(tmpMatchIndex, rf.matchIndex)
+		rf.mu.Unlock()
+		for i := len(tmpLog) - 1; tmpLog[i].Index > int(rf.commitIndex.Load()) && tmpLog[i].Term == rf.currentTerm.Load(); i-- {
 			agreeCount := 0
-			for _, matched := range rf.matchIndex {
-				if matched >= rf.log[i].Index {
+			for _, matched := range tmpMatchIndex {
+				if matched >= tmpLog[i].Index {
 					agreeCount++
 				}
 			}
 			if agreeCount+1 > len(rf.peers)/2 {
-				rf.commitIndex.Store(int64(rf.log[i].Index))
-				DPrintf("[Peer %v, Term %v] Agree at [%v, %v]", rf.me, rf.currentTerm.Load(), rf.log[i].Term, rf.log[i].Command)
+				rf.commitIndex.Store(int64(tmpLog[i].Index))
+				DPrintf("[Peer %v, Term %v] Agree at [%v, %v]", rf.me, rf.currentTerm.Load(), tmpLog[i].Term, tmpLog[i].Command)
 				break
 			}
 		}
@@ -596,12 +602,14 @@ func (rf *Raft) replicateLog() {
 				} else if nextIndex <= lastLogIndex {
 					relativeIndex := rf.relativeIndex(nextIndex)
 					// send append entries rpc
+					copyLogEntries := make([]Log, len(rf.log)-relativeIndex)
+					copy(copyLogEntries, rf.log[relativeIndex:])
 					args := &AppendEntriesArgs{
 						rf.currentTerm.Load(),
 						rf.me,
 						rf.log[relativeIndex-1].Index,
 						rf.log[relativeIndex-1].Term,
-						rf.log[relativeIndex:],
+						copyLogEntries,
 						rf.commitIndex.Load()}
 					rf.mu.Unlock()
 					reply := &AppendEntriesReply{}
