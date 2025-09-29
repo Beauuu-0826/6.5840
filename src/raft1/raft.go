@@ -138,6 +138,9 @@ func (rf *Raft) PersistBytes() int {
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	if !rf.existsLog(index) {
+		return
+	}
 	rf.snapshot = snapshot
 	rf.log = append(rf.log[:1], rf.log[rf.relativeIndex(index):]...)
 	rf.persist()
@@ -234,12 +237,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// check log matches or not
 	lastLogIndex := rf.log[len(rf.log)-1].Index
 	relativeIndex := rf.relativeIndex(args.PrevLogIndex)
-	if lastLogIndex < args.PrevLogIndex || rf.log[relativeIndex].Term != args.PrevLogTerm {
+	if !rf.existsLog(args.PrevLogIndex) || rf.log[relativeIndex].Term != args.PrevLogTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm.Load()
 		reply.Peer = rf.me
 		reply.XLen = lastLogIndex + 1
-		if lastLogIndex >= args.PrevLogIndex {
+		if rf.existsLog(args.PrevLogIndex) {
 			reply.XTerm = rf.log[relativeIndex].Term
 			for i := relativeIndex; i >= 0; i-- {
 				if rf.log[i].Term != reply.XTerm {
@@ -305,20 +308,24 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.log = append(rf.log[:1], rf.log[relativeIndex:]...)
 		rf.snapshot = args.Snapshot
 		rf.persist()
-		return
+	} else {
+		rf.log = append(rf.log[:1], args.LastIncludedLog)
+		rf.snapshot = args.Snapshot
+		rf.persist()
 	}
-	rf.log = append(rf.log[:1], args.LastIncludedLog)
-	rf.snapshot = args.Snapshot
-	rf.persist()
-	rf.lastApplied.Store(int64(args.LastIncludedLog.Index))
-	rf.commitIndex.Store(int64(args.LastIncludedLog.Index))
-	go rf.applyToStateMachine(raftapi.ApplyMsg{
-		CommandValid:  false,
-		SnapshotValid: true,
-		Snapshot:      rf.snapshot,
-		SnapshotIndex: args.LastIncludedLog.Index,
-		SnapshotTerm:  int(args.LastIncludedLog.Term),
-	})
+	if rf.lastApplied.Load() < int64(args.LastIncludedLog.Index) {
+		rf.lastApplied.Store(int64(args.LastIncludedLog.Index))
+		if rf.commitIndex.Load() < int64(args.LastIncludedLog.Index) {
+			rf.commitIndex.Store(int64(args.LastIncludedLog.Index))
+		}
+		go rf.applyToStateMachine(raftapi.ApplyMsg{
+			CommandValid:  false,
+			SnapshotValid: true,
+			Snapshot:      rf.snapshot,
+			SnapshotIndex: args.LastIncludedLog.Index,
+			SnapshotTerm:  int(args.LastIncludedLog.Term),
+		})
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
