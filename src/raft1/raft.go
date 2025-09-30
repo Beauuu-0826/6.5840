@@ -681,11 +681,11 @@ func (rf *Raft) heartbeat() {
 						rf.mu.Unlock()
 					}
 				} else {
-					relativeIndex := rf.relativeIndex(nextIndex)
+					relativeIndex := rf.relativeIndex(nextIndex - 1)
 					args := &AppendEntriesArgs{Term: rf.currentTerm.Load(),
 						LeaderId:     rf.me,
 						LeaderCommit: rf.commitIndex.Load(),
-						PrevLogTerm:  rf.log[relativeIndex-1].Term,
+						PrevLogTerm:  rf.log[relativeIndex].Term,
 						PrevLogIndex: nextIndex - 1}
 					rf.mu.Unlock()
 					reply := &AppendEntriesReply{}
@@ -743,6 +743,9 @@ func (rf *Raft) discoverNewTerm(newTerm int64) {
 }
 
 func (rf *Raft) relativeIndex(logIndex int) int {
+	if logIndex == 0 {
+		return 0
+	}
 	logLength := len(rf.log)
 	return logLength - 1 - (rf.log[logLength-1].Index - logIndex)
 }
