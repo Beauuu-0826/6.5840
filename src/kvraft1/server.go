@@ -6,13 +6,14 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/tester1"
+	"bytes"
 	"sync"
 	"sync/atomic"
 )
 
 type Value struct {
-	val     string
-	version rpc.Tversion
+	Val     string
+	Version rpc.Tversion
 }
 
 type KVServer struct {
@@ -43,15 +44,15 @@ func (kv *KVServer) DoOp(req any) any {
 			return reply
 		}
 		reply.Err = rpc.OK
-		reply.Value = val.val
-		reply.Version = val.version
+		reply.Value = val.Val
+		reply.Version = val.Version
 		return reply
 	case rpc.PutArgs:
 		reply := rpc.PutReply{}
 		kv.mu.Lock()
 		val, ok := kv.kvm[args.Key]
 		if ok {
-			if args.Version != val.version {
+			if args.Version != val.Version {
 				kv.mu.Unlock()
 				reply.Err = rpc.ErrVersion
 				return reply
@@ -78,11 +79,23 @@ func (kv *KVServer) DoOp(req any) any {
 
 func (kv *KVServer) Snapshot() []byte {
 	// Your code here
-	return nil
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.kvm)
+	return w.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
 	// Your code here
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var kvm map[string]Value
+	d.Decode(&kvm)
+	kv.kvm = kvm
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {

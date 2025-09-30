@@ -1,15 +1,13 @@
 package rsm
 
 import (
-	"sync"
-	"sync/atomic"
-	"time"
-
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
 	"6.5840/raft1"
 	"6.5840/raftapi"
 	"6.5840/tester1"
+	"sync"
+	"sync/atomic"
 )
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
@@ -90,14 +88,19 @@ func (rsm *RSM) reader() {
 		select {
 		case applyMsg, ok := <-rsm.applyCh:
 			if !ok {
+				rsm.mu.Lock()
 				for _, ch := range rsm.pendingChannels {
 					close(ch)
 				}
+				rsm.mu.Unlock()
 				return
 			}
 			if applyMsg.CommandValid {
 				op, isOp := applyMsg.Command.(Op)
-				returned := rsm.sm.DoOp(op.Req)
+				var returned any
+				if isOp {
+					returned = rsm.sm.DoOp(op.Req)
+				}
 				rsm.mu.Lock()
 				if pendingOp, exists := rsm.pendingOps[applyMsg.CommandIndex]; exists {
 					// isOp = false means no-op
@@ -114,9 +117,14 @@ func (rsm *RSM) reader() {
 					}
 				}
 				rsm.mu.Unlock()
+				if rsm.maxraftstate > 0 && rsm.rf.PersistBytes() >= rsm.maxraftstate {
+					snapshot := rsm.sm.Snapshot()
+					rsm.rf.Snapshot(applyMsg.CommandIndex, snapshot)
+				}
+			} else {
+				rsm.sm.Restore(applyMsg.Snapshot)
 			}
 		default:
-			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
