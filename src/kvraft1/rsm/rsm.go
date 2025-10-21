@@ -124,7 +124,6 @@ func (rsm *RSM) reader() {
 			} else {
 				rsm.sm.Restore(applyMsg.Snapshot)
 			}
-		default:
 		}
 	}
 }

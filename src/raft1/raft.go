@@ -488,6 +488,9 @@ func (rf *Raft) election(stop <-chan struct{}) {
 			close(electionStop)
 			return
 		case reply := <-replyChannel:
+			if rf.state.Load() != CANDIDATE || rf.killed() {
+				return
+			}
 			if reply.VoteGranted == false && reply.Term > rf.currentTerm.Load() {
 				rf.mu.Lock()
 				// double check
@@ -518,7 +521,6 @@ func (rf *Raft) election(stop <-chan struct{}) {
 				close(electionStop)
 				return
 			}
-		default:
 		}
 	}
 }
