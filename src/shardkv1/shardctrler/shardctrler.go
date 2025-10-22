@@ -5,13 +5,15 @@ package shardctrler
 //
 
 import (
-
 	"6.5840/kvsrv1"
+	"6.5840/kvsrv1/rpc"
 	"6.5840/kvtest1"
 	"6.5840/shardkv1/shardcfg"
+	"6.5840/shardkv1/shardgrp"
 	"6.5840/tester1"
 )
 
+const ConfigKey = "CONFIG_KEY"
 
 // ShardCtrler for the controller and kv clerk.
 type ShardCtrler struct {
@@ -45,6 +47,7 @@ func (sck *ShardCtrler) InitController() {
 // lists shardgrp shardcfg.Gid1 for all shards.
 func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 	// Your code here
+	sck.IKVClerk.Put(ConfigKey, cfg.String(), 0)
 }
 
 // Called by the tester to ask the controller to change the
@@ -52,13 +55,87 @@ func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 // changes the configuration it may be superseded by another
 // controller.
 func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
+	/**
+	one we should notice is that once the ChangeConfigTo was called, it should not fail.
+	And we should avoid the access for those keys that was moved would not direct to the old shard group
+	to maintain linearization
+	*/
 	// Your code here.
+	current, currentV := sck.QueryWithVersion()
+	gid2ChangeSet := make(map[tester.Tgid]*ChangeSet)
+	for shardId, groupId := range current.Shards {
+		if newGroupId := new.Shards[shardId]; newGroupId != groupId {
+			if _, exists := gid2ChangeSet[groupId]; !exists {
+				gid2ChangeSet[groupId] = &ChangeSet{}
+			}
+			if _, exists := gid2ChangeSet[newGroupId]; !exists {
+				gid2ChangeSet[newGroupId] = &ChangeSet{}
+			}
+			gid2ChangeSet[groupId].removeShards = append(gid2ChangeSet[groupId].removeShards, shardcfg.Tshid(shardId))
+			gid2ChangeSet[newGroupId].appendShards = append(gid2ChangeSet[newGroupId].appendShards, shardcfg.Tshid(shardId))
+		}
+	}
+	shid2State := make(map[shardcfg.Tshid][]byte)
+	gid2RemoveClerk := make(map[tester.Tgid]*shardgrp.Clerk)
+	// Step1: Freeze shards
+	for groupId, changeSet := range gid2ChangeSet {
+		if len(changeSet.removeShards) != 0 {
+			if _, exists := gid2RemoveClerk[groupId]; !exists {
+				gid2RemoveClerk[groupId] = shardgrp.MakeClerk(sck.clnt, current.Groups[groupId])
+			}
+			clerk := gid2RemoveClerk[groupId]
+			for _, removeShardId := range changeSet.removeShards {
+				// assume now it will not fail
+				state, _ := clerk.FreezeShard(removeShardId, new.Num)
+				shid2State[removeShardId] = state
+			}
+		}
+	}
+	// Step2: Install shards
+	gid2AppendClerk := make(map[tester.Tgid]*shardgrp.Clerk)
+	for groupId, changeSet := range gid2ChangeSet {
+		if len(changeSet.appendShards) != 0 {
+			if _, exists := gid2AppendClerk[groupId]; !exists {
+				gid2AppendClerk[groupId] = shardgrp.MakeClerk(sck.clnt, new.Groups[groupId])
+			}
+			clerk := gid2AppendClerk[groupId]
+			for _, appendShardId := range changeSet.appendShards {
+				clerk.InstallShard(appendShardId, shid2State[appendShardId], new.Num)
+			}
+		}
+	}
+	// Step3: Delete shards
+	for groupId, changeSet := range gid2ChangeSet {
+		if len(changeSet.removeShards) != 0 {
+			clerk := gid2RemoveClerk[groupId]
+			for _, removeShardId := range changeSet.removeShards {
+				clerk.DeleteShard(removeShardId, new.Num)
+			}
+		}
+	}
+	// Update config
+	sck.IKVClerk.Put(ConfigKey, new.String(), currentV)
 }
 
+type ChangeSet struct {
+	removeShards []shardcfg.Tshid
+	appendShards []shardcfg.Tshid
+}
 
 // Return the current configuration
 func (sck *ShardCtrler) Query() *shardcfg.ShardConfig {
 	// Your code here.
-	return nil
+	cfgStr, _, err := sck.IKVClerk.Get(ConfigKey)
+	if err == rpc.ErrNoKey {
+		panic("No config available now")
+	}
+	return shardcfg.FromString(cfgStr)
 }
 
+func (sck *ShardCtrler) QueryWithVersion() (*shardcfg.ShardConfig, rpc.Tversion) {
+	cfgStr, version, err := sck.IKVClerk.Get(ConfigKey)
+	if err == rpc.ErrNoKey {
+		panic("No config available now")
+	}
+	return shardcfg.FromString(cfgStr), version
+}
