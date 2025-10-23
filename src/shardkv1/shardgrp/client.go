@@ -71,7 +71,6 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		reply := &rpc.PutReply{}
 		curLeader := ck.leader.Load()
 		ok := ck.clnt.Call(ck.servers[curLeader], "KVServer.Put", args, reply)
-		//log.Printf("Client put args is %v, reply is %v, rpc ok is %v", args, reply, ok)
 		if !ok {
 			// if rpc call failed to get reply, retry call and set firstTime = false
 			firstTime = false

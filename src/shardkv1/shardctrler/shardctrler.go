@@ -43,13 +43,65 @@ func (sck *ShardCtrler) InitController() {
 	if err == rpc.ErrNoKey {
 		return
 	}
-	nextCfg := shardcfg.FromString(nextCfgStr)
-	currentCfg := sck.Query()
-	if currentCfg.Num >= nextCfg.Num {
+	next := shardcfg.FromString(nextCfgStr)
+	current, currentV := sck.QueryWithVersion()
+	if current.Num+1 != next.Num {
 		return
 	}
 	// recovery
-	sck.ChangeConfigTo(nextCfg)
+	gid2ChangeSet := make(map[tester.Tgid]*ChangeSet)
+	for shardId, groupId := range current.Shards {
+		if newGroupId := next.Shards[shardId]; newGroupId != groupId {
+			if _, exists := gid2ChangeSet[groupId]; !exists {
+				gid2ChangeSet[groupId] = &ChangeSet{}
+			}
+			if _, exists := gid2ChangeSet[newGroupId]; !exists {
+				gid2ChangeSet[newGroupId] = &ChangeSet{}
+			}
+			gid2ChangeSet[groupId].removeShards = append(gid2ChangeSet[groupId].removeShards, shardcfg.Tshid(shardId))
+			gid2ChangeSet[newGroupId].appendShards = append(gid2ChangeSet[newGroupId].appendShards, shardcfg.Tshid(shardId))
+		}
+	}
+	shid2State := make(map[shardcfg.Tshid][]byte)
+	gid2RemoveClerk := make(map[tester.Tgid]*shardgrp.Clerk)
+	// Step1: Freeze shards
+	for groupId, changeSet := range gid2ChangeSet {
+		if len(changeSet.removeShards) != 0 {
+			if _, exists := gid2RemoveClerk[groupId]; !exists {
+				gid2RemoveClerk[groupId] = shardgrp.MakeClerk(sck.clnt, current.Groups[groupId])
+			}
+			clerk := gid2RemoveClerk[groupId]
+			for _, removeShardId := range changeSet.removeShards {
+				// assume now it will not fail
+				state, _ := clerk.FreezeShard(removeShardId, next.Num)
+				shid2State[removeShardId] = state
+			}
+		}
+	}
+	// Step2: Install shards
+	gid2AppendClerk := make(map[tester.Tgid]*shardgrp.Clerk)
+	for groupId, changeSet := range gid2ChangeSet {
+		if len(changeSet.appendShards) != 0 {
+			if _, exists := gid2AppendClerk[groupId]; !exists {
+				gid2AppendClerk[groupId] = shardgrp.MakeClerk(sck.clnt, next.Groups[groupId])
+			}
+			clerk := gid2AppendClerk[groupId]
+			for _, appendShardId := range changeSet.appendShards {
+				clerk.InstallShard(appendShardId, shid2State[appendShardId], next.Num)
+			}
+		}
+	}
+	// Step3: Delete shards
+	for groupId, changeSet := range gid2ChangeSet {
+		if len(changeSet.removeShards) != 0 {
+			clerk := gid2RemoveClerk[groupId]
+			for _, removeShardId := range changeSet.removeShards {
+				clerk.DeleteShard(removeShardId, next.Num)
+			}
+		}
+	}
+	// Update config
+	sck.IKVClerk.Put(ConfigKey, next.String(), currentV)
 }
 
 // Called once by the tester to supply the first configuration.  You
@@ -74,7 +126,7 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	*/
 	// Your code here.
 	current, currentV := sck.QueryWithVersion()
-	if !sck.StoreNextConfig(new) {
+	if !sck.StoreNextConfig(new, currentV) {
 		// short circuit
 		return
 	}
@@ -156,28 +208,29 @@ func (sck *ShardCtrler) QueryWithVersion() (*shardcfg.ShardConfig, rpc.Tversion)
 	return shardcfg.FromString(cfgStr), version
 }
 
-func (sck *ShardCtrler) StoreNextConfig(nextConfig *shardcfg.ShardConfig) bool {
+func (sck *ShardCtrler) StoreNextConfig(nextConfig *shardcfg.ShardConfig, ver rpc.Tversion) bool {
 	nextConfigStr := nextConfig.String()
 	for {
-		currentNextStr, version, err := sck.IKVClerk.Get(NextConfigKey)
-		var putErr rpc.Err
+		str, version, err := sck.IKVClerk.Get(NextConfigKey)
 		if err == rpc.ErrNoKey {
-			putErr = sck.IKVClerk.Put(NextConfigKey, nextConfigStr, 0)
-		} else {
-			currentNext := shardcfg.FromString(currentNextStr)
-			if currentNext.Num < nextConfig.Num {
-				putErr = sck.IKVClerk.Put(NextConfigKey, nextConfigStr, version)
-			} else if currentNext.Num == nextConfig.Num {
-				return true
-			} else {
-				// if current next config's num is larger than the config's num, then current next config
-				// has applied already, return false to short circuit
-				return false
-			}
+			version = 0
 		}
-		if putErr != rpc.OK {
-			continue
+		// if last rpc returns ErrMaybe, we should check for the content and the version
+		// if version and content equals what we expected, that means the last put request
+		// executes successfully, so return true
+		if version == ver && str == nextConfigStr {
+			return true
 		}
-		return true
+		if version+1 != ver {
+			return false
+		}
+		putErr := sck.IKVClerk.Put(NextConfigKey, nextConfigStr, version)
+		if putErr == rpc.OK {
+			return true
+		}
+		if putErr == rpc.ErrVersion {
+			return false
+		}
+		continue
 	}
 }

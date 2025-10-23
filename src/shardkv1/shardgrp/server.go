@@ -74,12 +74,10 @@ func (kv *KVServer) DoOp(req any) any {
 		}
 		if ok {
 			if args.Version != val.Version {
-				//log.Printf("Server[gid=%v, me=%v] process put req for key %v return err version, current version is %v and args version is %v, the args value is %v and current value is %v", kv.gid, kv.me, args.Key, val.Version, args.Version, args.Value, val.Val)
 				reply.Err = rpc.ErrVersion
 				return reply
 			}
 			kv.kvm[shardId][args.Key] = Value{args.Value, args.Version + 1}
-			//log.Printf("Server[gid=%v, me=%v] process put req for key %v ok, current version is %v and current value is %v", kv.gid, kv.me, args.Key, args.Version+1, args.Value)
 			reply.Err = rpc.OK
 			return reply
 		}
@@ -198,7 +196,6 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	// Your code here
 	err, rep := kv.rsm.Submit(*args)
-	//log.Printf("The put args is %v, return err is %v, rep is %v", *args, err, rep)
 	if err == rpc.ErrWrongLeader {
 		reply.Err = rpc.ErrWrongLeader
 		return
