@@ -14,6 +14,7 @@ import (
 )
 
 const ConfigKey = "CONFIG_KEY"
+const NextConfigKey = "NEXT_CONFIG_KEY"
 
 // ShardCtrler for the controller and kv clerk.
 type ShardCtrler struct {
@@ -38,6 +39,17 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 // controller. In part A, this method doesn't need to do anything. In
 // B and C, this method implements recovery.
 func (sck *ShardCtrler) InitController() {
+	nextCfgStr, _, err := sck.IKVClerk.Get(NextConfigKey)
+	if err == rpc.ErrNoKey {
+		return
+	}
+	nextCfg := shardcfg.FromString(nextCfgStr)
+	currentCfg := sck.Query()
+	if currentCfg.Num >= nextCfg.Num {
+		return
+	}
+	// recovery
+	sck.ChangeConfigTo(nextCfg)
 }
 
 // Called once by the tester to supply the first configuration.  You
@@ -62,6 +74,10 @@ func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	*/
 	// Your code here.
 	current, currentV := sck.QueryWithVersion()
+	if !sck.StoreNextConfig(new) {
+		// short circuit
+		return
+	}
 	gid2ChangeSet := make(map[tester.Tgid]*ChangeSet)
 	for shardId, groupId := range current.Shards {
 		if newGroupId := new.Shards[shardId]; newGroupId != groupId {
@@ -138,4 +154,30 @@ func (sck *ShardCtrler) QueryWithVersion() (*shardcfg.ShardConfig, rpc.Tversion)
 		panic("No config available now")
 	}
 	return shardcfg.FromString(cfgStr), version
+}
+
+func (sck *ShardCtrler) StoreNextConfig(nextConfig *shardcfg.ShardConfig) bool {
+	nextConfigStr := nextConfig.String()
+	for {
+		currentNextStr, version, err := sck.IKVClerk.Get(NextConfigKey)
+		var putErr rpc.Err
+		if err == rpc.ErrNoKey {
+			putErr = sck.IKVClerk.Put(NextConfigKey, nextConfigStr, 0)
+		} else {
+			currentNext := shardcfg.FromString(currentNextStr)
+			if currentNext.Num < nextConfig.Num {
+				putErr = sck.IKVClerk.Put(NextConfigKey, nextConfigStr, version)
+			} else if currentNext.Num == nextConfig.Num {
+				return true
+			} else {
+				// if current next config's num is larger than the config's num, then current next config
+				// has applied already, return false to short circuit
+				return false
+			}
+		}
+		if putErr != rpc.OK {
+			continue
+		}
+		return true
+	}
 }

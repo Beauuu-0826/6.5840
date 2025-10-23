@@ -122,6 +122,12 @@ func (kv *KVServer) DoOp(req any) any {
 			reply.Err = rpc.ErrVersion
 			return reply
 		}
+		// using responsibleShards to guarantee the idempotency,
+		// to protect from installing after config changed which may cause data lost
+		if _, exists := kv.responsibleShards[args.Shard]; exists {
+			reply.Err = rpc.ErrVersion
+			return reply
+		}
 		reply.Err = rpc.OK
 		kv.maxNum = args.Num
 		kv.responsibleShards[args.Shard] = true
